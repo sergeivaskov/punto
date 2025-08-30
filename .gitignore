@@ -1,0 +1,56 @@
+# Swift Package Manager
+.build/
+build/
+.swiftpm/
+Packages/
+.cursor/
+Sources_legacy/
+
+# Xcode
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint
+*.xcuserstate
+*.pbxuser
+*.mode1v3
+*.mode2v3
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+.TemporaryItems
+
+# Editors/IDEs
+.idea/
+.vscode/
+
+# Build artifacts
+build/
+
+# Logs & coverage
+*.log
+coverage/
+*.profraw
+*.profdata
+*.gcno
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Swift Playgrounds
+timeline.xctimeline
+playground.xcworkspace
+
+# Keep documentation and helper logs tracked
+# (ai-helpers/logs and .cursor rules are intentionally NOT ignored)
