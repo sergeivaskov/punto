@@ -204,7 +204,252 @@ public final class HotkeyManager {
 final class LayoutSwitchAction {
     private let layoutConverter = QwertyJcukenLayoutConverter()
     
-    private func checkAXSelectedText() -> Bool {
+    private func getElementRole(_ element: AXUIElement) -> String? {
+        var roleValue: CFTypeRef?
+        let roleResult = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleValue)
+        
+        guard roleResult == .success, let role = roleValue as? String else {
+            return nil
+        }
+        
+        return role
+    }
+    
+    private func isBrowserApplication() -> Bool {
+        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
+            return false
+        }
+        
+        let browserBundleIDs = [
+            "com.google.Chrome",
+            "com.apple.Safari", 
+            "org.mozilla.firefox",
+            "com.microsoft.edgemac",
+            "com.operasoftware.Opera",
+            "com.brave.Browser"
+        ]
+        
+        return browserBundleIDs.contains(frontmostApp.bundleIdentifier ?? "")
+    }
+    
+    private func isCanvasApplication() -> Bool {
+        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
+            return false
+        }
+        
+        let canvasBundleIDs = [
+            "com.figma.Desktop",
+            "com.adobe.illustrator",
+            "com.adobe.Photoshop",
+            "com.bohemiancoding.sketch3",
+            "com.adobe.AfterEffects",
+            "com.adobe.InDesign"
+        ]
+        
+        return canvasBundleIDs.contains(frontmostApp.bundleIdentifier ?? "")
+    }
+    
+    private func extractURLFromBrowser() -> String? {
+        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
+            return nil
+        }
+        
+        let appElement = AXUIElementCreateApplication(frontmostApp.processIdentifier)
+        
+        // Method 1: Try focused element URL
+        var focusedElement: CFTypeRef?
+        let focusResult = AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, &focusedElement)
+        
+        if focusResult == .success, let focused = focusedElement {
+            var urlRef: CFTypeRef?
+            let urlResult = AXUIElementCopyAttributeValue(focused as! AXUIElement, kAXURLAttribute as CFString, &urlRef)
+            
+            if urlResult == .success, let url = urlRef as? String, !url.isEmpty {
+                Log.d("UniversalDetection", "URL extracted from focused element: '\(url)'")
+                return url
+            }
+        }
+        
+        // Method 2: Try main window URL
+        var windowsRef: CFTypeRef?
+        let windowsResult = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+        
+        if windowsResult == .success, let windows = windowsRef as? [AXUIElement], !windows.isEmpty {
+            for window in windows {
+                var urlRef: CFTypeRef?
+                let urlResult = AXUIElementCopyAttributeValue(window, kAXURLAttribute as CFString, &urlRef)
+                
+                if urlResult == .success, let url = urlRef as? String, !url.isEmpty {
+                    Log.d("UniversalDetection", "URL extracted from window: '\(url)'")
+                    return url
+                }
+            }
+        }
+        
+        Log.d("UniversalDetection", "URL extraction failed - no URL available")
+        return nil
+    }
+    
+    private func analyzeCanvaPatterns(_ title: String) -> (score: Int, indicators: [String]) {
+        let title_lower = title.lowercased()
+        var score = 0
+        var indicators: [String] = []
+        
+        // Tier 1: Direct Canva indicators (high confidence)
+        let directIndicators = ["canva", "canva.com"]
+        for indicator in directIndicators {
+            if title_lower.contains(indicator) {
+                score += 100
+                indicators.append("direct:\(indicator)")
+            }
+        }
+        
+        // Tier 2: Template/Design indicators (medium confidence)
+        let templateIndicators = ["template", "design", "carousel", "poster", "banner", "flyer", "story"]
+        for indicator in templateIndicators {
+            if title_lower.contains(indicator) {
+                score += 30
+                indicators.append("template:\(indicator)")
+            }
+        }
+        
+        // Tier 3: Size patterns (medium confidence)
+        let sizePatterns = ["1080 x 1350", "1920 x 1080", "800 x 800", "1200 x 1200", "x \\d+ px"]
+        for pattern in sizePatterns {
+            if title_lower.range(of: pattern, options: .regularExpression) != nil {
+                score += 25
+                indicators.append("size:\(pattern)")
+            }
+        }
+        
+        // Tier 4: Design-related terms (low confidence)
+        let designTerms = ["px", "graphic", "visual", "layout", "creative"]
+        for term in designTerms {
+            if title_lower.contains(term) {
+                score += 10
+                indicators.append("design:\(term)")
+            }
+        }
+        
+        return (score, indicators)
+    }
+    
+    private func isCanvaWebApp() -> Bool {
+        // Universal Detection Framework
+        Log.d("UniversalDetection", "🚀 Starting Universal Canva Detection...")
+        
+        // Check if current app is a browser
+        guard isBrowserApplication() else {
+            Log.d("UniversalDetection", "❌ Not a browser application")
+            return false
+        }
+        
+        var confidenceScore = 0
+        var detectionMethods: [String] = []
+        
+        // Method 1: URL-Centric Detection (Primary - Highest Confidence)
+        if let url = extractURLFromBrowser() {
+            if url.lowercased().contains("canva.com") {
+                confidenceScore += 100
+                detectionMethods.append("URL:canva.com")
+                Log.d("UniversalDetection", "✅ DEFINITIVE: Canva detected via URL domain")
+                return true
+            } else {
+                Log.d("UniversalDetection", "URL checked: '\(url)' - not Canva domain")
+            }
+        }
+        
+        // Method 2: Enhanced Pattern Analysis (Fallback)
+        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
+            Log.d("UniversalDetection", "❌ No frontmost application")
+            return false
+        }
+        
+        let appElement = AXUIElementCreateApplication(frontmostApp.processIdentifier)
+        var windowsRef: CFTypeRef?
+        let windowsResult = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
+        
+        guard windowsResult == .success,
+              let windows = windowsRef as? [AXUIElement],
+              !windows.isEmpty else {
+            Log.d("UniversalDetection", "❌ Failed to get windows")
+            return false
+        }
+        
+        Log.d("UniversalDetection", "📊 Analyzing \(windows.count) windows for Canva patterns...")
+        
+        var bestScore = 0
+        var bestIndicators: [String] = []
+        var bestTitle = ""
+        
+        for (index, window) in windows.enumerated() {
+            var titleRef: CFTypeRef?
+            let titleResult = AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
+            
+            if titleResult == .success, let title = titleRef as? String, !title.isEmpty {
+                let analysis = analyzeCanvaPatterns(title)
+                
+                Log.d("UniversalDetection", "Window \(index + 1): '\(title)' → Score: \(analysis.score), Indicators: \(analysis.indicators)")
+                
+                if analysis.score > bestScore {
+                    bestScore = analysis.score
+                    bestIndicators = analysis.indicators
+                    bestTitle = title
+                }
+            }
+        }
+        
+        // Confidence Thresholds
+        let definitiveThreshold = 100  // Direct canva mention
+        let highThreshold = 50         // Multiple strong patterns
+        let moderateThreshold = 25     // Single strong pattern
+        
+        let isCanvaDetected = bestScore >= moderateThreshold
+        
+        if isCanvaDetected {
+            let confidenceLevel = bestScore >= definitiveThreshold ? "DEFINITIVE" :
+                                 bestScore >= highThreshold ? "HIGH" :
+                                 bestScore >= moderateThreshold ? "MODERATE" : "LOW"
+            
+            Log.d("UniversalDetection", "✅ \(confidenceLevel): Canva detected via patterns")
+            Log.d("UniversalDetection", "Best match: '\(bestTitle)' (Score: \(bestScore))")
+            Log.d("UniversalDetection", "Indicators: \(bestIndicators)")
+        } else {
+            Log.d("UniversalDetection", "❌ Canva not detected - insufficient pattern confidence")
+            Log.d("UniversalDetection", "Best score: \(bestScore) (threshold: \(moderateThreshold))")
+        }
+        
+        return isCanvaDetected
+    }
+    
+    private func isTextInputElement(_ role: String) -> Bool {
+        let legitimateTextRoles = [
+            "AXTextField", "AXTextArea", "AXComboBox", 
+            "AXSearchField", "AXSecureTextField", "AXStaticText"
+        ]
+        
+        // Standard text input elements
+        if legitimateTextRoles.contains(role) {
+            return true
+        }
+        
+        // AXGroup in browsers can be rich text editors (Google Docs, etc.)
+        if role == "AXGroup" && isBrowserApplication() {
+            Log.d("LayoutSwitchAction", "AX: AXGroup detected in browser context - likely web text editor")
+            return true
+        }
+        
+        return false
+    }
+    
+    private func checkSmartTextContext() -> Bool {
+        // Block Adobe Illustrator completely due to complex Canvas operations
+        if let frontmostApp = NSWorkspace.shared.frontmostApplication,
+           frontmostApp.bundleIdentifier == "com.adobe.illustrator" {
+            Log.d("LayoutSwitchAction", "Adobe Illustrator detected - blocking all layout switch operations")
+            return false
+        }
+        
         // Create system-wide accessibility object
         let systemElement = AXUIElementCreateSystemWide()
         
@@ -213,31 +458,48 @@ final class LayoutSwitchAction {
         let focusResult = AXUIElementCopyAttributeValue(systemElement, kAXFocusedUIElementAttribute as CFString, &focusedElement)
         
         guard focusResult == .success, let focused = focusedElement else {
-            Log.d("LayoutSwitchAction", "AX: No focused element found, fallback to clipboard check")
-            return true // Fallback to old behavior if AX fails
+            Log.d("LayoutSwitchAction", "AX: No focused element found, fallback to permissive mode")
+            return true // Fallback to permissive behavior if AX fails
         }
         
-        // Get selected text from the focused element
-        var selectedText: CFTypeRef?
-        let selectedResult = AXUIElementCopyAttributeValue(focused as! AXUIElement, kAXSelectedTextAttribute as CFString, &selectedText)
+        let focusedAXElement = focused as! AXUIElement
         
-        guard selectedResult == .success, 
-              let text = selectedText as? String,
-              !text.isEmpty else {
-            Log.d("LayoutSwitchAction", "AX: No text selection detected")
-            return false
+        // Get element role
+        guard let role = getElementRole(focusedAXElement) else {
+            Log.d("LayoutSwitchAction", "AX: Cannot determine element role, fallback to permissive mode")
+            return true // Unknown role - allow operation
         }
         
-        Log.d("LayoutSwitchAction", "AX: Text selection detected: '\(text.prefix(50))...'")
-        return true
+        Log.d("LayoutSwitchAction", "AX: Focused element role: '\(role)' in app: \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown")")
+        
+        // Check if this is a legitimate text input element
+        if isTextInputElement(role) {
+            // It's a text input element - check for actual text selection
+            var selectedText: CFTypeRef?
+            let selectedResult = AXUIElementCopyAttributeValue(focusedAXElement, kAXSelectedTextAttribute as CFString, &selectedText)
+            
+            if selectedResult == .success,
+               let text = selectedText as? String,
+               !text.isEmpty {
+                Log.d("LayoutSwitchAction", "AX: Text input with selection detected: '\(text.prefix(50))...'")
+                return true // Legitimate text editing context with AX confirmation
+            } else {
+                Log.d("LayoutSwitchAction", "AX: Text input element but no AX selection detected, proceeding to clipboard validation")
+                return true // Text element without AX selection - Canvas app fallback
+            }
+        } else {
+            // Not a text input element (Canvas, Group, etc.)
+            Log.d("LayoutSwitchAction", "AX: Non-text element role '\(role)' detected, likely Canvas operation")
+            return false // Canvas or other non-text context
+        }
     }
     
     func performHotkeyAsync(suspendCallback: @escaping () -> Void, resumeCallback: @escaping () -> Void) {
         Log.d("LayoutSwitchAction", "Starting async layout switch operation")
         
-        // Context Gating: Check for real text selection using AX API
-        guard checkAXSelectedText() else {
-            Log.d("LayoutSwitchAction", "Context Gating: No real text selection detected, cancelling operation")
+        // Context Gating: Check for smart text context using Enhanced AX Role Detection
+        guard checkSmartTextContext() else {
+            Log.d("LayoutSwitchAction", "Context Gating: No legitimate text context detected, cancelling operation")
             resumeCallback()
             return
         }
@@ -289,6 +551,52 @@ final class LayoutSwitchAction {
             PasteboardManager.restorePasteboard(pasteboardBackup)
             resumeCallback()
             return
+        }
+        
+        // Content Validation: prevent large data objects
+        let isDesktopCanvas = isCanvasApplication()
+        let isWebCanvas = isCanvaWebApp()
+        let isBrowser = isBrowserApplication()
+        
+        // Strict validation for Canvas applications (Desktop + Web)
+        if isDesktopCanvas || isWebCanvas {
+            let trimmedText = clipboardText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let maxLength = 50
+            let hasMultipleLines = clipboardText.contains("\n") || clipboardText.contains("\r")
+            let appType = isWebCanvas ? "Canva web app" : "Canvas app"
+            
+            // Block if text is too long (likely a data object, not edited text)
+            if trimmedText.count > maxLength {
+                Log.d("LayoutSwitchAction", "\(appType): Text too long (\(trimmedText.count) chars, max \(maxLength)) - likely data object, not text editing")
+                PasteboardManager.restorePasteboard(pasteboardBackup)
+                resumeCallback()
+                return
+            }
+            
+            // Block multiline content in short selections (likely tabular data)
+            if hasMultipleLines && trimmedText.count < maxLength {
+                Log.d("LayoutSwitchAction", "\(appType): Multiline content detected - likely structured data, not text editing")
+                PasteboardManager.restorePasteboard(pasteboardBackup)
+                resumeCallback()
+                return
+            }
+            
+            Log.d("LayoutSwitchAction", "\(appType): Content validation passed (\(trimmedText.count) chars)")
+        }
+        // Soft validation for general browser applications
+        else if isBrowser {
+            let trimmedText = clipboardText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let maxLength = 100 // More lenient for general web apps
+            
+            // Block if text is too long (likely a UI element or data object)
+            if trimmedText.count > maxLength {
+                Log.d("LayoutSwitchAction", "Browser app: Text too long (\(trimmedText.count) chars, max \(maxLength)) - likely UI element or data object")
+                PasteboardManager.restorePasteboard(pasteboardBackup)
+                resumeCallback()
+                return
+            }
+            
+            Log.d("LayoutSwitchAction", "Browser app: Content validation passed (\(trimmedText.count) chars)")
         }
         
         // Convert to opposite layout
