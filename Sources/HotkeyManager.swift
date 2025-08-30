@@ -159,15 +159,25 @@ public final class HotkeyManager {
             let optionPressed = flags.contains(.maskAlternate)
             let optionWasPressed = previousFlags.contains(.maskAlternate)
             
-            if optionPressed && !optionWasPressed && !isProcessing {
-                // Option key was just pressed - trigger layout switch asynchronously
-                Log.d("HotkeyManager", "Option key pressed - triggering layout switch")
+            // CRITICAL: Only handle isolated Option key press (no other modifiers)
+            // This prevents blocking Option+Cmd, Option+Shift, etc. combinations
+            let otherModifiers: CGEventFlags = [.maskCommand, .maskControl, .maskShift, .maskSecondaryFn, .maskHelp]
+            let hasOtherModifiers = !otherModifiers.intersection(flags).isEmpty
+            
+            if optionPressed && !optionWasPressed && !isProcessing && !hasOtherModifiers {
+                // Isolated Option key was just pressed - trigger layout switch asynchronously
+                Log.d("HotkeyManager", "Isolated Option key pressed - triggering layout switch")
                 isProcessing = true
                 
                 DispatchQueue.main.async { [weak self] in
                     self?.performLayoutSwitchAsync()
                 }
-                return nil // Consume the event
+                return nil // Consume the event ONLY for isolated Option
+            }
+            
+            // Pass through all other Option combinations (Option+Cmd, Option+Shift, etc.)
+            if hasOtherModifiers {
+                Log.d("HotkeyManager", "Option key with other modifiers detected - passing through")
             }
         }
         
@@ -202,7 +212,9 @@ public final class HotkeyManager {
 // MARK: - Action Classes
 
 final class LayoutSwitchAction {
-    private let layoutConverter = QwertyJcukenLayoutConverter()
+    private let clipboardProcessor = ClipboardProcessor()
+    private var lastActivationTime: Date = Date.distantPast
+    private let debounceInterval: TimeInterval = 0.5 // 500ms debouncing
     
     private func getElementRole(_ element: AXUIElement) -> String? {
         var roleValue: CFTypeRef?
@@ -213,213 +225,6 @@ final class LayoutSwitchAction {
         }
         
         return role
-    }
-    
-    private func isBrowserApplication() -> Bool {
-        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
-            return false
-        }
-        
-        let browserBundleIDs = [
-            "com.google.Chrome",
-            "com.apple.Safari", 
-            "org.mozilla.firefox",
-            "com.microsoft.edgemac",
-            "com.operasoftware.Opera",
-            "com.brave.Browser"
-        ]
-        
-        return browserBundleIDs.contains(frontmostApp.bundleIdentifier ?? "")
-    }
-    
-    private func isCanvasApplication() -> Bool {
-        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
-            return false
-        }
-        
-        let canvasBundleIDs = [
-            "com.figma.Desktop",
-            "com.adobe.illustrator",
-            "com.adobe.Photoshop",
-            "com.bohemiancoding.sketch3",
-            "com.adobe.AfterEffects",
-            "com.adobe.InDesign"
-        ]
-        
-        return canvasBundleIDs.contains(frontmostApp.bundleIdentifier ?? "")
-    }
-    
-    private func extractURLFromBrowser() -> String? {
-        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
-            return nil
-        }
-        
-        let appElement = AXUIElementCreateApplication(frontmostApp.processIdentifier)
-        
-        // Method 1: Try focused element URL
-        var focusedElement: CFTypeRef?
-        let focusResult = AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, &focusedElement)
-        
-        if focusResult == .success, let focused = focusedElement {
-            var urlRef: CFTypeRef?
-            let urlResult = AXUIElementCopyAttributeValue(focused as! AXUIElement, kAXURLAttribute as CFString, &urlRef)
-            
-            if urlResult == .success, let url = urlRef as? String, !url.isEmpty {
-                Log.d("UniversalDetection", "URL extracted from focused element: '\(url)'")
-                return url
-            }
-        }
-        
-        // Method 2: Try main window URL
-        var windowsRef: CFTypeRef?
-        let windowsResult = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
-        
-        if windowsResult == .success, let windows = windowsRef as? [AXUIElement], !windows.isEmpty {
-            for window in windows {
-                var urlRef: CFTypeRef?
-                let urlResult = AXUIElementCopyAttributeValue(window, kAXURLAttribute as CFString, &urlRef)
-                
-                if urlResult == .success, let url = urlRef as? String, !url.isEmpty {
-                    Log.d("UniversalDetection", "URL extracted from window: '\(url)'")
-                    return url
-                }
-            }
-        }
-        
-        Log.d("UniversalDetection", "URL extraction failed - no URL available")
-        return nil
-    }
-    
-    private func analyzeCanvaPatterns(_ title: String) -> (score: Int, indicators: [String]) {
-        let title_lower = title.lowercased()
-        var score = 0
-        var indicators: [String] = []
-        
-        // Tier 1: Direct Canva indicators (high confidence)
-        let directIndicators = ["canva", "canva.com"]
-        for indicator in directIndicators {
-            if title_lower.contains(indicator) {
-                score += 100
-                indicators.append("direct:\(indicator)")
-            }
-        }
-        
-        // Tier 2: Template/Design indicators (medium confidence)
-        let templateIndicators = ["template", "design", "carousel", "poster", "banner", "flyer", "story"]
-        for indicator in templateIndicators {
-            if title_lower.contains(indicator) {
-                score += 30
-                indicators.append("template:\(indicator)")
-            }
-        }
-        
-        // Tier 3: Size patterns (medium confidence)
-        let sizePatterns = ["1080 x 1350", "1920 x 1080", "800 x 800", "1200 x 1200", "x \\d+ px"]
-        for pattern in sizePatterns {
-            if title_lower.range(of: pattern, options: .regularExpression) != nil {
-                score += 25
-                indicators.append("size:\(pattern)")
-            }
-        }
-        
-        // Tier 4: Design-related terms (low confidence)
-        let designTerms = ["px", "graphic", "visual", "layout", "creative"]
-        for term in designTerms {
-            if title_lower.contains(term) {
-                score += 10
-                indicators.append("design:\(term)")
-            }
-        }
-        
-        return (score, indicators)
-    }
-    
-    private func isCanvaWebApp() -> Bool {
-        // Universal Detection Framework
-        Log.d("UniversalDetection", "🚀 Starting Universal Canva Detection...")
-        
-        // Check if current app is a browser
-        guard isBrowserApplication() else {
-            Log.d("UniversalDetection", "❌ Not a browser application")
-            return false
-        }
-        
-        var confidenceScore = 0
-        var detectionMethods: [String] = []
-        
-        // Method 1: URL-Centric Detection (Primary - Highest Confidence)
-        if let url = extractURLFromBrowser() {
-            if url.lowercased().contains("canva.com") {
-                confidenceScore += 100
-                detectionMethods.append("URL:canva.com")
-                Log.d("UniversalDetection", "✅ DEFINITIVE: Canva detected via URL domain")
-                return true
-            } else {
-                Log.d("UniversalDetection", "URL checked: '\(url)' - not Canva domain")
-            }
-        }
-        
-        // Method 2: Enhanced Pattern Analysis (Fallback)
-        guard let frontmostApp = NSWorkspace.shared.frontmostApplication else {
-            Log.d("UniversalDetection", "❌ No frontmost application")
-            return false
-        }
-        
-        let appElement = AXUIElementCreateApplication(frontmostApp.processIdentifier)
-        var windowsRef: CFTypeRef?
-        let windowsResult = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef)
-        
-        guard windowsResult == .success,
-              let windows = windowsRef as? [AXUIElement],
-              !windows.isEmpty else {
-            Log.d("UniversalDetection", "❌ Failed to get windows")
-            return false
-        }
-        
-        Log.d("UniversalDetection", "📊 Analyzing \(windows.count) windows for Canva patterns...")
-        
-        var bestScore = 0
-        var bestIndicators: [String] = []
-        var bestTitle = ""
-        
-        for (index, window) in windows.enumerated() {
-            var titleRef: CFTypeRef?
-            let titleResult = AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
-            
-            if titleResult == .success, let title = titleRef as? String, !title.isEmpty {
-                let analysis = analyzeCanvaPatterns(title)
-                
-                Log.d("UniversalDetection", "Window \(index + 1): '\(title)' → Score: \(analysis.score), Indicators: \(analysis.indicators)")
-                
-                if analysis.score > bestScore {
-                    bestScore = analysis.score
-                    bestIndicators = analysis.indicators
-                    bestTitle = title
-                }
-            }
-        }
-        
-        // Confidence Thresholds
-        let definitiveThreshold = 100  // Direct canva mention
-        let highThreshold = 50         // Multiple strong patterns
-        let moderateThreshold = 25     // Single strong pattern
-        
-        let isCanvaDetected = bestScore >= moderateThreshold
-        
-        if isCanvaDetected {
-            let confidenceLevel = bestScore >= definitiveThreshold ? "DEFINITIVE" :
-                                 bestScore >= highThreshold ? "HIGH" :
-                                 bestScore >= moderateThreshold ? "MODERATE" : "LOW"
-            
-            Log.d("UniversalDetection", "✅ \(confidenceLevel): Canva detected via patterns")
-            Log.d("UniversalDetection", "Best match: '\(bestTitle)' (Score: \(bestScore))")
-            Log.d("UniversalDetection", "Indicators: \(bestIndicators)")
-        } else {
-            Log.d("UniversalDetection", "❌ Canva not detected - insufficient pattern confidence")
-            Log.d("UniversalDetection", "Best score: \(bestScore) (threshold: \(moderateThreshold))")
-        }
-        
-        return isCanvaDetected
     }
     
     private func isTextInputElement(_ role: String) -> Bool {
@@ -434,7 +239,7 @@ final class LayoutSwitchAction {
         }
         
         // AXGroup in browsers can be rich text editors (Google Docs, etc.)
-        if role == "AXGroup" && isBrowserApplication() {
+        if role == "AXGroup" && ApplicationDetector.isBrowser() {
             Log.d("LayoutSwitchAction", "AX: AXGroup detected in browser context - likely web text editor")
             return true
         }
@@ -443,10 +248,8 @@ final class LayoutSwitchAction {
     }
     
     private func checkSmartTextContext() -> Bool {
-        // Block Adobe Illustrator completely due to complex Canvas operations
-        if let frontmostApp = NSWorkspace.shared.frontmostApplication,
-           frontmostApp.bundleIdentifier == "com.adobe.illustrator" {
-            Log.d("LayoutSwitchAction", "Adobe Illustrator detected - blocking all layout switch operations")
+        // Check for blocked applications
+        if ApplicationDetector.isBlocked() {
             return false
         }
         
@@ -470,7 +273,7 @@ final class LayoutSwitchAction {
             return true // Unknown role - allow operation
         }
         
-        Log.d("LayoutSwitchAction", "AX: Focused element role: '\(role)' in app: \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown")")
+        Log.d("LayoutSwitchAction", "AX: Focused element role: '\(role)' in app: \(ApplicationDetector.currentBundleID())")
         
         // Check if this is a legitimate text input element
         if isTextInputElement(role) {
@@ -484,8 +287,15 @@ final class LayoutSwitchAction {
                 Log.d("LayoutSwitchAction", "AX: Text input with selection detected: '\(text.prefix(50))...'")
                 return true // Legitimate text editing context with AX confirmation
             } else {
-                Log.d("LayoutSwitchAction", "AX: Text input element but no AX selection detected, proceeding to clipboard validation")
-                return true // Text element without AX selection - Canvas app fallback
+                // Check if this is a Canva web app - require stricter validation
+                let canvaDetection = UniversalCanvaDetector.detect()
+                if canvaDetection.detected && ApplicationDetector.isBrowser() {
+                    Log.d("LayoutSwitchAction", "AX: Canva web app detected but no AX selection - likely not text editing context")
+                    return false // Strict validation for Canva web apps
+                } else {
+                    Log.d("LayoutSwitchAction", "AX: Text input element but no AX selection detected, proceeding to clipboard validation")
+                    return true // Text element without AX selection - Canvas app fallback
+                }
             }
         } else {
             // Not a text input element (Canvas, Group, etc.)
@@ -496,6 +306,15 @@ final class LayoutSwitchAction {
     
     func performHotkeyAsync(suspendCallback: @escaping () -> Void, resumeCallback: @escaping () -> Void) {
         Log.d("LayoutSwitchAction", "Starting async layout switch operation")
+        
+        // Debouncing: Prevent rapid successive activations
+        let currentTime = Date()
+        if currentTime.timeIntervalSince(lastActivationTime) < debounceInterval {
+            Log.d("LayoutSwitchAction", "Debouncing: Operation too soon after previous attempt, cancelling")
+            resumeCallback()
+            return
+        }
+        lastActivationTime = currentTime
         
         // Context Gating: Check for smart text context using Enhanced AX Role Detection
         guard checkSmartTextContext() else {
@@ -509,7 +328,7 @@ final class LayoutSwitchAction {
         let previousClipboardText = NSPasteboard.general.string(forType: .string) ?? ""
         
         // Copy selection to clipboard (Cmd+C)
-        guard simulateKeyCombination(.maskCommand, CGKeyCode(kVK_ANSI_C)) else {
+        guard clipboardProcessor.copySelection() else {
             Log.d("LayoutSwitchAction", "Failed to copy selection")
             resumeCallback()
             SoundPlayer.shared.playError()
@@ -518,98 +337,26 @@ final class LayoutSwitchAction {
         
         // Wait for clipboard to be populated asynchronously
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            self?.processClipboardContent(
+            self?.clipboardProcessor.processClipboardContent(
                 pasteboardBackup: pasteboardBackup,
-                previousClipboardText: previousClipboardText,
-                resumeCallback: resumeCallback
-            )
+                previousClipboardText: previousClipboardText
+            ) { result in
+                self?.handleProcessingResult(result, pasteboardBackup: pasteboardBackup, resumeCallback: resumeCallback)
+            }
         }
     }
     
-    private func processClipboardContent(pasteboardBackup: PasteboardManager.PasteboardBackup, previousClipboardText: String, resumeCallback: @escaping () -> Void) {
-        // Read and analyze text from clipboard
-        guard let clipboardText = NSPasteboard.general.string(forType: .string),
-              !clipboardText.isEmpty else {
-            Log.d("LayoutSwitchAction", "No text in clipboard")
+    private func handleProcessingResult(_ result: ClipboardProcessor.ProcessingResult, pasteboardBackup: PasteboardManager.PasteboardBackup, resumeCallback: @escaping () -> Void) {
+        guard result.success else {
+            Log.d("LayoutSwitchAction", "Processing failed: \(result.reason)")
             PasteboardManager.restorePasteboard(pasteboardBackup)
             resumeCallback()
             SoundPlayer.shared.playError()
             return
         }
         
-        // Context Gating: Check if clipboard actually changed (i.e., there was a selection)
-        guard clipboardText != previousClipboardText else {
-            Log.d("LayoutSwitchAction", "No selection detected - clipboard unchanged, cancelling operation")
-            PasteboardManager.restorePasteboard(pasteboardBackup)
-            resumeCallback()
-            return
-        }
-        
-        // Check if text contains letters (ignore pure symbols/numbers)
-        guard clipboardText.contains(where: { $0.isLetter }) else {
-            Log.d("LayoutSwitchAction", "Text contains no letters, skipping conversion")
-            PasteboardManager.restorePasteboard(pasteboardBackup)
-            resumeCallback()
-            return
-        }
-        
-        // Content Validation: prevent large data objects
-        let isDesktopCanvas = isCanvasApplication()
-        let isWebCanvas = isCanvaWebApp()
-        let isBrowser = isBrowserApplication()
-        
-        // Strict validation for Canvas applications (Desktop + Web)
-        if isDesktopCanvas || isWebCanvas {
-            let trimmedText = clipboardText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let maxLength = 50
-            let hasMultipleLines = clipboardText.contains("\n") || clipboardText.contains("\r")
-            let appType = isWebCanvas ? "Canva web app" : "Canvas app"
-            
-            // Block if text is too long (likely a data object, not edited text)
-            if trimmedText.count > maxLength {
-                Log.d("LayoutSwitchAction", "\(appType): Text too long (\(trimmedText.count) chars, max \(maxLength)) - likely data object, not text editing")
-                PasteboardManager.restorePasteboard(pasteboardBackup)
-                resumeCallback()
-                return
-            }
-            
-            // Block multiline content in short selections (likely tabular data)
-            if hasMultipleLines && trimmedText.count < maxLength {
-                Log.d("LayoutSwitchAction", "\(appType): Multiline content detected - likely structured data, not text editing")
-                PasteboardManager.restorePasteboard(pasteboardBackup)
-                resumeCallback()
-                return
-            }
-            
-            Log.d("LayoutSwitchAction", "\(appType): Content validation passed (\(trimmedText.count) chars)")
-        }
-        // Soft validation for general browser applications
-        else if isBrowser {
-            let trimmedText = clipboardText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let maxLength = 100 // More lenient for general web apps
-            
-            // Block if text is too long (likely a UI element or data object)
-            if trimmedText.count > maxLength {
-                Log.d("LayoutSwitchAction", "Browser app: Text too long (\(trimmedText.count) chars, max \(maxLength)) - likely UI element or data object")
-                PasteboardManager.restorePasteboard(pasteboardBackup)
-                resumeCallback()
-                return
-            }
-            
-            Log.d("LayoutSwitchAction", "Browser app: Content validation passed (\(trimmedText.count) chars)")
-        }
-        
-        // Convert to opposite layout
-        let convertedText = layoutConverter.convertToOppositeLayout(clipboardText)
-        
-        Log.d("LayoutSwitchAction", "Converting '\(clipboardText)' -> '\(convertedText)'")
-        
-        // Set converted text to clipboard
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(convertedText, forType: .string)
-        
         // Paste converted text (Cmd+V)
-        guard simulateKeyCombination(.maskCommand, CGKeyCode(kVK_ANSI_V)) else {
+        guard clipboardProcessor.pasteContent() else {
             Log.d("LayoutSwitchAction", "Failed to paste converted text")
             PasteboardManager.restorePasteboard(pasteboardBackup)
             resumeCallback()
@@ -619,6 +366,11 @@ final class LayoutSwitchAction {
         
         // Wait for paste to complete asynchronously
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            // Switch system layout based on converted text
+            if let originalText = result.originalText, let convertedText = result.convertedText {
+                InputSourceManager.switchBasedOnConvertedText(originalText: originalText, convertedText: convertedText)
+            }
+            
             // Restore original pasteboard
             PasteboardManager.restorePasteboard(pasteboardBackup)
             
@@ -633,22 +385,6 @@ final class LayoutSwitchAction {
     // Legacy synchronous method for backward compatibility
     func performHotkey() {
         performHotkeyAsync(suspendCallback: {}, resumeCallback: {})
-    }
-    
-    private func simulateKeyCombination(_ modifiers: CGEventFlags, _ keyCode: CGKeyCode) -> Bool {
-        guard let keyDownEvent = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
-              let keyUpEvent = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) else {
-            return false
-        }
-        
-        keyDownEvent.flags = modifiers
-        keyUpEvent.flags = modifiers
-        
-        // Use .cgSessionEventTap for proper event delivery to active application
-        keyDownEvent.post(tap: .cgSessionEventTap)
-        keyUpEvent.post(tap: .cgSessionEventTap)
-        
-        return true
     }
 }
 
