@@ -5,126 +5,86 @@ import ApplicationServices
 /// Компонент для realtime анализа клавиатурного ввода и токенизации слов
 public final class TokenTracker {
     private var currentToken: String = ""
-    private let maxTokenLength: Int = 1000
+    private var lastBundleID: String = ""
+    private static let maxTokenLength = 100
     
-    public init() {}
+    // Unified mapping: keyCode -> reset reason
+    private static let interruptionMap: [CGKeyCode: String] = [
+        // Navigation
+        CGKeyCode(kVK_LeftArrow): "navigation", CGKeyCode(kVK_RightArrow): "navigation",
+        CGKeyCode(kVK_UpArrow): "navigation", CGKeyCode(kVK_DownArrow): "navigation",
+        CGKeyCode(kVK_Home): "navigation", CGKeyCode(kVK_End): "navigation",
+        CGKeyCode(kVK_PageUp): "navigation", CGKeyCode(kVK_PageDown): "navigation",
+        // Editing
+        CGKeyCode(kVK_Delete): "editing", CGKeyCode(kVK_ForwardDelete): "editing",
+        // Control
+        CGKeyCode(kVK_Tab): "control", CGKeyCode(kVK_Return): "control", CGKeyCode(kVK_Escape): "control"
+    ]
     
     /// Обработка keyDown события для токенизации
     public func handleKeyDown(_ event: CGEvent, isProcessing: Bool) {
-        // Пауза во время processing mode для предотвращения self-capture
-        guard !isProcessing else {
-            Log.d("TokenTracker", "Processing mode: pausing tokenization")
-            return
-        }
+        guard !isProcessing else { return }
         
         let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-        let flags = event.flags
         
-        // Игнорируем события с модификаторами (Cmd+A, Option+C и т.д.)
-        let modifierMask: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
-        guard modifierMask.intersection(flags).isEmpty else {
-            Log.d("TokenTracker", "Modifier detected: skipping accumulation")
-            return
-        }
+        // Context change или interruption key → reset
+        if checkContextChange() { return resetToken("focus change") }
+        if let reason = Self.interruptionMap[keyCode] { return resetToken(reason) }
         
-        // Обработка пробела - логирование токена и сброс
-        if keyCode == CGKeyCode(kVK_Space) {
-            handleSpaceDetection()
-            return
-        }
+        // Modifiers → skip
+        let modifiers: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
+        guard modifiers.intersection(event.flags).isEmpty else { return }
         
-        // Извлечение символа для накопления
-        guard let character = extractCharacter(from: event) else {
-            Log.d("TokenTracker", "Cannot extract character: skipping")
-            return
-        }
+        // Space → complete token
+        if keyCode == CGKeyCode(kVK_Space) { return completeToken() }
         
-        // Проверка контекста для токенизации
-        guard isValidTextContext() else {
-            Log.d("TokenTracker", "Context invalid: skipping accumulation")
-            return
-        }
-        
-        // Накопление символа в токен
-        accumulateCharacter(character)
+        // Accumulate character if valid context
+        guard isValidContext(), let char = extractCharacter(from: event) else { return }
+        accumulateCharacter(char)
     }
     
-    /// Извлечение символа из CGEvent
     private func extractCharacter(from event: CGEvent) -> String? {
-        // Получаем Unicode строку из события
         var length = 0
         event.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &length, unicodeString: nil)
-        
         guard length > 0 else { return nil }
         
-        var unicodeChars = [UniChar](repeating: 0, count: length)
-        event.keyboardGetUnicodeString(maxStringLength: length, actualStringLength: &length, unicodeString: &unicodeChars)
+        var chars = [UniChar](repeating: 0, count: length)
+        event.keyboardGetUnicodeString(maxStringLength: length, actualStringLength: &length, unicodeString: &chars)
         
-        let character = String(utf16CodeUnits: unicodeChars, count: length)
-        
-        // Включаем только printable characters (буквы, цифры, спецсимволы)
-        guard character.rangeOfCharacter(from: CharacterSet.whitespacesAndNewlines) == nil else {
-            return nil
-        }
-        
-        return character
+        let char = String(utf16CodeUnits: chars, count: length)
+        return char.rangeOfCharacter(from: .whitespacesAndNewlines) == nil ? char : nil
     }
     
-    /// Накопление символа в токен с защитой от overflow
-    private func accumulateCharacter(_ character: String) {
-        // Защита от memory overflow
-        if currentToken.count >= maxTokenLength {
-            Log.d("TokenTracker", "Token length limit reached: truncating and logging")
-            handleSpaceDetection()
-            return
-        }
-        
-        currentToken += character
-        Log.d("TokenTracker", "Token accumulated: '\(currentToken)' (length: \(currentToken.count))")
+    private func accumulateCharacter(_ char: String) {
+        guard currentToken.count < Self.maxTokenLength else { return resetToken("length limit") }
+        currentToken += char
     }
     
-    /// Обработка детекции пробела - логирование и сброс токена
-    private func handleSpaceDetection() {
-        // Логируем только non-empty токены
-        guard !currentToken.isEmpty else {
-            Log.d("TokenTracker", "Space detected: empty token, ignoring")
-            return
-        }
-        
-        Log.d("TokenTracker", "Space detected: logging token '\(currentToken)' and resetting")
-        
-        // Сброс токена для нового слова
-        resetToken()
-    }
-    
-    /// Сброс токена к начальному состоянию
-    private func resetToken() {
+    private func completeToken() {
+        guard !currentToken.isEmpty else { return }
+        Log.d("TokenTracker", "🔤 TOKEN COMPLETED: '\(currentToken)'")
         currentToken = ""
-        Log.d("TokenTracker", "Token reset: ready for new word")
     }
     
-    /// Проверка валидности текстового контекста
-    private func isValidTextContext() -> Bool {
-        // Базовая проверка на blocked приложения
-        if ApplicationDetector.isBlocked() {
-            return false
-        }
-        
-        // Для Canvas приложений строгая валидация (оптимизированная через bundle ID)
-        if ApplicationDetector.isCanvas() {
-            Log.d("TokenTracker", "Canvas application detected: skipping tokenization")
-            return false
-        }
-        
-        // Разрешительный подход для большинства приложений
-        return true
+    private func resetToken(_ reason: String) {
+        guard !currentToken.isEmpty else { return }
+        Log.d("TokenTracker", "⚡ TOKEN RESET: '\(currentToken)' (by \(reason))")
+        currentToken = ""
     }
     
-    /// Принудительный сброс токена (для context changes, focus loss)
+    private func isValidContext() -> Bool {
+        return !ApplicationDetector.isBlocked() && !ApplicationDetector.isCanvas()
+    }
+    
     public func forceReset() {
-        if !currentToken.isEmpty {
-            Log.d("TokenTracker", "Force reset: discarding token '\(currentToken)'")
-            resetToken()
-        }
+        guard !currentToken.isEmpty else { return }
+        Log.d("TokenTracker", "🔄 TOKEN DISCARDED: '\(currentToken)' (force reset)")
+        currentToken = ""
+    }
+    
+    private func checkContextChange() -> Bool {
+        let bundleID = ApplicationDetector.currentBundleID()
+        defer { lastBundleID = bundleID }
+        return !lastBundleID.isEmpty && bundleID != lastBundleID
     }
 }
