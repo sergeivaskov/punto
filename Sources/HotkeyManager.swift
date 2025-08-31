@@ -351,7 +351,11 @@ final class LayoutSwitchAction {
             Log.d("LayoutSwitchAction", "Processing failed: \(result.reason)")
             PasteboardManager.restorePasteboard(pasteboardBackup)
             resumeCallback()
-            SoundPlayer.shared.playError()
+            
+            // Не воспроизводим звук ошибки для нормальной ситуации отсутствия выделенного текста
+            if !result.reason.contains("No selection detected") {
+                SoundPlayer.shared.playError()
+            }
             return
         }
         
