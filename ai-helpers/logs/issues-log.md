@@ -96,4 +96,59 @@
 
 ---
 
+## 🔍 003 - 2025-08-31 - Race condition в CGEventTap обработке Option hotkey - 🏗️ Архитектурная
+
+### 📊 **Контекст:**
+- **Задача**: Исправить ложное срабатывание Option hotkey при быстром нажатии комбинаций Option+Cmd, Option+Shift
+- **Окружение**: macOS Swift app, HotkeyManager.swift, CGEventTap с flagsChanged events
+- **Предпосылки**: Изолированный Option должен запускать layout switch, комбинации с Option должны блокироваться
+
+### ❌ **Проблема:**
+- **Симптомы**: При быстром нажатии Option+Cmd приложение запускало layout switch несмотря на наличие других модификаторов
+- **Корневая причина**: Race condition в sequence flagsChanged событий - система генерирует [Option=true, Cmd=false] → [Option=true, Cmd=true], первое событие проходит проверку изолированности и запускает обработку
+- **Влияние**: Нарушение user experience - layout switch срабатывал при использовании стандартных системных комбинаций
+
+### 🛠️ **Решение:**
+- **Подход**: Event-driven deferred validation через RunLoop.main.perform для дожидания всех pending flagsChanged events
+- **Конкретные действия**:
+  ```swift
+  // БЫЛО: Немедленная обработка
+  DispatchQueue.main.async { [weak self] in
+      self?.performLayoutSwitchAsync()
+  }
+  
+  // СТАЛО: Отложенная валидация
+  RunLoop.main.perform(inModes: [.common]) { [weak self] in
+      self?.validateAndTriggerLayoutSwitch()
+  }
+  
+  // Новый метод final validation:
+  let currentFlags = CGEventSource.flagsState(.combinedSessionState)
+  guard !hasOtherModifiers else { return }
+  ```
+- **Результат**: Fast Option+Cmd комбинации корректно блокируются, isolated Option продолжает работать
+
+### 📈 **Анализ:**
+- **✅ Что сработало хорошо**:
+  - Event-driven solution без использования timer/polling подходов
+  - RunLoop.main.perform эффективно defer'ит обработку до completion event cycle
+  - CGEventSource.flagsState(.combinedSessionState) дает accurate final state
+  - Comprehensive logging для debugging timing-sensitive issues
+- **❌ Что не сработало**: 
+  - Изначальная логика final validation требовала что Option все еще нажат, но пользователь мог отпустить клавишу к моменту callback execution
+  - Первая реализация сломала isolated Option behavior
+- **💡 Уроки**:
+  - CGEventTap events могут приходить в rapid sequences требующих careful timing analysis
+  - Initial detection vs Final validation должны иметь четко разделенные responsibilities
+  - Event lifecycle understanding критично для системных event handlers
+  - Deferred validation pattern полезен когда нужно дождаться related events completion
+- **🔄 Альтернативы**: Timeout-based approach, но event-driven solution более deterministic
+
+### 🎯 **Применимость:**
+- **Теги**: `#eventtap` `#hotkey` `#swift` `#macos` `#race-condition` `#timing` `#architecture` `#event-driven` `#runloop`
+- **Похожие ситуации**: Любые системы обработки rapid input events где sequence timing имеет значение
+- **Профилактика**: При работе с CGEventTap всегда тестировать edge cases с rapid modifier combinations, consider event sequencing в design phase
+
+---
+
 *Записи добавляются только по запросу пользователя*

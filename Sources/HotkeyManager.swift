@@ -165,14 +165,15 @@ public final class HotkeyManager {
             let hasOtherModifiers = !otherModifiers.intersection(flags).isEmpty
             
             if optionPressed && !optionWasPressed && !isProcessing && !hasOtherModifiers {
-                // Isolated Option key was just pressed - trigger layout switch asynchronously
-                Log.d("HotkeyManager", "Isolated Option key pressed - triggering layout switch")
+                // Potential isolated Option key detected - defer validation to next RunLoop cycle
+                Log.d("HotkeyManager", "Potential isolated Option detected - deferring validation")
                 isProcessing = true
                 
-                DispatchQueue.main.async { [weak self] in
-                    self?.performLayoutSwitchAsync()
+                // Defer validation to allow all pending flagsChanged events to be processed
+                RunLoop.main.perform(inModes: [.common]) { [weak self] in
+                    self?.validateAndTriggerLayoutSwitch()
                 }
-                return nil // Consume the event ONLY for isolated Option
+                return nil // Consume the event tentatively
             }
             
             // Pass through all other Option combinations (Option+Cmd, Option+Shift, etc.)
@@ -182,6 +183,25 @@ public final class HotkeyManager {
         }
         
         return Unmanaged.passUnretained(event)
+    }
+    
+    private func validateAndTriggerLayoutSwitch() {
+        // Final validation: ensure no other modifiers were added after initial isolated Option detection
+        let currentFlags = CGEventSource.flagsState(.combinedSessionState)
+        let otherModifiers: CGEventFlags = [.maskCommand, .maskControl, .maskShift, .maskSecondaryFn, .maskHelp]
+        let hasOtherModifiers = !otherModifiers.intersection(currentFlags).isEmpty
+        
+        Log.d("HotkeyManager", "Final validation: otherModifiers=\(hasOtherModifiers)")
+        
+        // Only proceed if no other modifiers were added (initial isolated Option detection was correct)
+        guard !hasOtherModifiers else {
+            Log.d("HotkeyManager", "Final validation failed - other modifiers detected, cancelling layout switch")
+            isProcessing = false
+            return
+        }
+        
+        Log.d("HotkeyManager", "Final validation passed - confirmed isolated Option, proceeding with layout switch")
+        performLayoutSwitchAsync()
     }
     
     private func performLayoutSwitchAsync() {
