@@ -162,6 +162,13 @@ public final class QwertyJcukenLayoutConverter: LayoutConverter {
                 } else if ruToEn[charString.lowercased()] != nil {
                     ruCount += 1
                 }
+            } else {
+                // Check special characters and punctuation using mapping tables
+                if enToRu[charString] != nil {
+                    enCount += 1
+                } else if ruToEn[charString] != nil {
+                    ruCount += 1
+                }
             }
         }
         

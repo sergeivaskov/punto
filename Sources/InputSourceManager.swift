@@ -71,14 +71,20 @@ final class InputSourceManager {
     
     /// Determine target layout based on converted text
     static func determineTargetLayout(from originalText: String, to convertedText: String) -> InputSourceID? {
-        // Simple heuristic: if converted text has more Cyrillic characters, it's Russian
+        // Enhanced heuristic: analyze both letters and special characters
         let cyrillicCharacterSet = CharacterSet(charactersIn: "а"..."я")
             .union(CharacterSet(charactersIn: "А"..."Я"))
             .union(CharacterSet(charactersIn: "ё"))
             .union(CharacterSet(charactersIn: "Ё"))
+            // Add Russian special characters from mapping
+            .union(CharacterSet(charactersIn: "ёЁжЖэЭхХъЪбБюЮ"))
+            .union(CharacterSet(charactersIn: "\"№%:,.;()"))
         
         let latinCharacterSet = CharacterSet(charactersIn: "a"..."z")
             .union(CharacterSet(charactersIn: "A"..."Z"))
+            // Add English special characters from mapping  
+            .union(CharacterSet(charactersIn: "`~[];'{}\"<>"))
+            .union(CharacterSet(charactersIn: "@#$%^&*()"))
         
         let cyrillicCount = convertedText.unicodeScalars.filter { cyrillicCharacterSet.contains($0) }.count
         let latinCount = convertedText.unicodeScalars.filter { latinCharacterSet.contains($0) }.count
@@ -89,7 +95,7 @@ final class InputSourceManager {
             return .usEnglish
         }
         
-        return nil // Ambiguous or no letters
+        return nil // Ambiguous or equal counts
     }
     
     /// Switch layout based on converted text analysis

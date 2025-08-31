@@ -84,11 +84,6 @@ final class ContextValidator {
         }
     }
     
-    /// Check if text contains letters (ignore pure symbols/numbers)
-    static func hasLetters(_ text: String) -> Bool {
-        return text.contains(where: { $0.isLetter })
-    }
-    
     /// Validate basic text requirements
     static func validateBasicRequirements(_ text: String) -> (valid: Bool, reason: String) {
         // Check if text is empty
@@ -96,11 +91,8 @@ final class ContextValidator {
             return (false, "No text in clipboard")
         }
         
-        // Check if text contains letters
-        guard hasLetters(text) else {
-            return (false, "Text contains no letters, skipping conversion")
-        }
-        
+        // Allow all non-empty text - let LayoutConverter decide what's convertible
+        // This enables conversion of special characters, punctuation, numbers, etc.
         return (true, "Basic requirements met")
     }
 }
