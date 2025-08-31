@@ -27,6 +27,7 @@ public final class HotkeyManager {
     private let aiAction = AITransformAction()
     private let caseAction = CaseTransformAction()
     private let layoutSwitchAction = LayoutSwitchAction()
+    private let tokenTracker = TokenTracker()
     private var isOptionKeyRegistered = false
     private var eventTap: CFMachPort?
     private var isProcessing = false
@@ -136,8 +137,10 @@ public final class HotkeyManager {
     }
 
     private func handleEvent(proxy: CGEventTapProxy, type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        // Handle regular hotkeys
+        // Handle realtime tokenization for all keyDown events
         if type == .keyDown {
+            tokenTracker.handleKeyDown(event, isProcessing: isProcessing)
+            
             let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
             let flags = event.flags
             
