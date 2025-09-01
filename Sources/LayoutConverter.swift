@@ -1,4 +1,5 @@
 import Foundation
+import Carbon
 
 public enum KeyboardLayout: Equatable {
     case enUS
@@ -10,12 +11,19 @@ public protocol LayoutConverter {
     func convertTextPreservingNonLetters(_ text: String, from: KeyboardLayout, to: KeyboardLayout) -> String
     func detectPredominantLayout(_ text: String) -> KeyboardLayout
     func convertToOppositeLayout(_ text: String) -> String
+    
+    // Layout-independent keycode extraction
+    func extractCharacterFromKeycode(_ keycode: CGKeyCode, layout: KeyboardLayout) -> String?
 }
 
 public final class QwertyJcukenLayoutConverter: LayoutConverter {
     // Используем строки длиной 1 для стабильного сопоставления, затем конвертируем в Character
     private let enToRu: [String: String]
     private let ruToEn: [String: String]
+    
+    // Keycode to character mapping for layout-independent extraction
+    private let keycodeToQwerty: [CGKeyCode: String]
+    private let keycodeToJcuken: [CGKeyCode: String]
 
     public init() {
         // Letters + punctuation by keyboard position (US QWERTY ↔ RU ЙЦУКЕН)
@@ -67,6 +75,38 @@ public final class QwertyJcukenLayoutConverter: LayoutConverter {
         ruToEnMap["-"] = "-"; ruToEnMap["_"] = "_"
         ruToEnMap["="] = "="; ruToEnMap["+"] = "+"
         self.ruToEn = ruToEnMap
+        
+        // Keycode to QWERTY character mapping (layout-independent)
+        self.keycodeToQwerty = [
+            // Letter row 1 (top)
+            CGKeyCode(kVK_ANSI_Q): "q", CGKeyCode(kVK_ANSI_W): "w", CGKeyCode(kVK_ANSI_E): "e", CGKeyCode(kVK_ANSI_R): "r", CGKeyCode(kVK_ANSI_T): "t",
+            CGKeyCode(kVK_ANSI_Y): "y", CGKeyCode(kVK_ANSI_U): "u", CGKeyCode(kVK_ANSI_I): "i", CGKeyCode(kVK_ANSI_O): "o", CGKeyCode(kVK_ANSI_P): "p",
+            // Letter row 2 (middle)  
+            CGKeyCode(kVK_ANSI_A): "a", CGKeyCode(kVK_ANSI_S): "s", CGKeyCode(kVK_ANSI_D): "d", CGKeyCode(kVK_ANSI_F): "f", CGKeyCode(kVK_ANSI_G): "g",
+            CGKeyCode(kVK_ANSI_H): "h", CGKeyCode(kVK_ANSI_J): "j", CGKeyCode(kVK_ANSI_K): "k", CGKeyCode(kVK_ANSI_L): "l",
+            // Letter row 3 (bottom)
+            CGKeyCode(kVK_ANSI_Z): "z", CGKeyCode(kVK_ANSI_X): "x", CGKeyCode(kVK_ANSI_C): "c", CGKeyCode(kVK_ANSI_V): "v", CGKeyCode(kVK_ANSI_B): "b",
+            CGKeyCode(kVK_ANSI_N): "n", CGKeyCode(kVK_ANSI_M): "m",
+            // Numbers
+            CGKeyCode(kVK_ANSI_1): "1", CGKeyCode(kVK_ANSI_2): "2", CGKeyCode(kVK_ANSI_3): "3", CGKeyCode(kVK_ANSI_4): "4", CGKeyCode(kVK_ANSI_5): "5",
+            CGKeyCode(kVK_ANSI_6): "6", CGKeyCode(kVK_ANSI_7): "7", CGKeyCode(kVK_ANSI_8): "8", CGKeyCode(kVK_ANSI_9): "9", CGKeyCode(kVK_ANSI_0): "0",
+            // Punctuation
+            CGKeyCode(kVK_ANSI_Grave): "`", CGKeyCode(kVK_ANSI_Minus): "-", CGKeyCode(kVK_ANSI_Equal): "=",
+            CGKeyCode(kVK_ANSI_LeftBracket): "[", CGKeyCode(kVK_ANSI_RightBracket): "]", CGKeyCode(kVK_ANSI_Backslash): "\\",
+            CGKeyCode(kVK_ANSI_Semicolon): ";", CGKeyCode(kVK_ANSI_Quote): "'",
+            CGKeyCode(kVK_ANSI_Comma): ",", CGKeyCode(kVK_ANSI_Period): ".", CGKeyCode(kVK_ANSI_Slash): "/"
+        ]
+        
+        // Keycode to JCUKEN character mapping (layout-independent)
+        var keycodeToJcukenMap: [CGKeyCode: String] = [:]
+        for (keycode, qwertyChar) in keycodeToQwerty {
+            if let jcukenChar = enToRu[qwertyChar] {
+                keycodeToJcukenMap[keycode] = jcukenChar
+            } else {
+                keycodeToJcukenMap[keycode] = qwertyChar // fallback
+            }
+        }
+        self.keycodeToJcuken = keycodeToJcukenMap
     }
 
     public func convertToken(_ token: String, from: KeyboardLayout, to: KeyboardLayout) -> String {
@@ -180,6 +220,16 @@ public final class QwertyJcukenLayoutConverter: LayoutConverter {
         let predominantLayout = detectPredominantLayout(text)
         let targetLayout: KeyboardLayout = (predominantLayout == .enUS) ? .ruRU : .enUS
         return convertTextPreservingNonLetters(text, from: predominantLayout, to: targetLayout)
+    }
+    
+    /// Layout-independent character extraction from raw keycode
+    public func extractCharacterFromKeycode(_ keycode: CGKeyCode, layout: KeyboardLayout) -> String? {
+        switch layout {
+        case .enUS:
+            return keycodeToQwerty[keycode]
+        case .ruRU:
+            return keycodeToJcuken[keycode]
+        }
     }
 }
 

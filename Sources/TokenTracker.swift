@@ -1,90 +1,135 @@
 import Foundation
 import Carbon
 import ApplicationServices
+import QuartzCore
 
 /// Компонент для realtime анализа клавиатурного ввода и токенизации слов
 public final class TokenTracker {
     private var currentToken: String = ""
     private var lastBundleID: String = ""
-    private static let maxTokenLength = 100
+    private var isPostReplacement: Bool = false
+    private var lastFocusChangeTime: CFTimeInterval = 0
+    private let layoutConverter = QwertyJcukenLayoutConverter()
     
-    // Unified mapping: keyCode -> reset reason
+    private static let maxTokenLength = 100
+    private static let focusChangeGracePeriod: CFTimeInterval = 0.3
+    
+    // Unified interruption mapping
     private static let interruptionMap: [CGKeyCode: String] = [
-        // Navigation
-        CGKeyCode(kVK_LeftArrow): "navigation", CGKeyCode(kVK_RightArrow): "navigation",
-        CGKeyCode(kVK_UpArrow): "navigation", CGKeyCode(kVK_DownArrow): "navigation",
-        CGKeyCode(kVK_Home): "navigation", CGKeyCode(kVK_End): "navigation",
-        CGKeyCode(kVK_PageUp): "navigation", CGKeyCode(kVK_PageDown): "navigation",
-        // Editing
-        CGKeyCode(kVK_Delete): "editing", CGKeyCode(kVK_ForwardDelete): "editing",
-        // Control
-        CGKeyCode(kVK_Tab): "control", CGKeyCode(kVK_Return): "control", CGKeyCode(kVK_Escape): "control"
+        CGKeyCode(kVK_LeftArrow): "nav", CGKeyCode(kVK_RightArrow): "nav", CGKeyCode(kVK_UpArrow): "nav", CGKeyCode(kVK_DownArrow): "nav",
+        CGKeyCode(kVK_Home): "nav", CGKeyCode(kVK_End): "nav", CGKeyCode(kVK_PageUp): "nav", CGKeyCode(kVK_PageDown): "nav",
+        CGKeyCode(kVK_Delete): "edit", CGKeyCode(kVK_ForwardDelete): "edit", CGKeyCode(kVK_Tab): "ctrl", 
+        CGKeyCode(kVK_Return): "ctrl", CGKeyCode(kVK_Escape): "ctrl"
     ]
     
-    /// Обработка keyDown события для токенизации
+    private var currentLayout: KeyboardLayout {
+        InputSourceManager.getCurrentInputSource()?.contains("Russian") == true ? .ruRU : .enUS
+    }
+    
     public func handleKeyDown(_ event: CGEvent, isProcessing: Bool) {
         guard !isProcessing else { return }
         
         let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+        handleFocusChangeIfNeeded()
         
-        // Context change или interruption key → reset
-        if checkContextChange() { return resetToken("focus change") }
-        if let reason = Self.interruptionMap[keyCode] { return resetToken(reason) }
+        if let reason = Self.interruptionMap[keyCode] { return clearToken(reason) }
+        if keyCode == CGKeyCode(kVK_Space) { return clearToken("space", isCompletion: true) }
         
-        // Modifiers → skip
-        let modifiers: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
-        guard modifiers.intersection(event.flags).isEmpty else { return }
+        let skipModifiers: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate]
+        guard skipModifiers.intersection(event.flags).isEmpty,
+              isValidContextPublic(),
+              let char = extractCharacter(keyCode: keyCode, isShift: event.flags.contains(.maskShift)) else { return }
         
-        // Space → complete token
-        if keyCode == CGKeyCode(kVK_Space) { return completeToken() }
-        
-        // Accumulate character if valid context
-        guard isValidContext(), let char = extractCharacter(from: event) else { return }
-        accumulateCharacter(char)
-    }
-    
-    private func extractCharacter(from event: CGEvent) -> String? {
-        var length = 0
-        event.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &length, unicodeString: nil)
-        guard length > 0 else { return nil }
-        
-        var chars = [UniChar](repeating: 0, count: length)
-        event.keyboardGetUnicodeString(maxStringLength: length, actualStringLength: &length, unicodeString: &chars)
-        
-        let char = String(utf16CodeUnits: chars, count: length)
-        return char.rangeOfCharacter(from: .whitespacesAndNewlines) == nil ? char : nil
-    }
-    
-    private func accumulateCharacter(_ char: String) {
-        guard currentToken.count < Self.maxTokenLength else { return resetToken("length limit") }
+        guard currentToken.count < Self.maxTokenLength else { return clearToken("length") }
         currentToken += char
+        Log.d("TokenTracker", "📝 '\(currentToken)'[\(currentToken.count)]")
     }
     
-    private func completeToken() {
-        guard !currentToken.isEmpty else { return }
-        Log.d("TokenTracker", "🔤 TOKEN COMPLETED: '\(currentToken)'")
-        currentToken = ""
+    private func extractCharacter(keyCode: CGKeyCode, isShift: Bool) -> String? {
+        guard let baseChar = layoutConverter.extractCharacterFromKeycode(keyCode, layout: currentLayout) else { return nil }
+        let char = isShift ? baseChar.uppercased() : baseChar
+        guard char.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else { return nil }
+        Log.d("TokenTracker", "🔤 \(keyCode)→'\(char)'")
+        return char
     }
     
-    private func resetToken(_ reason: String) {
-        guard !currentToken.isEmpty else { return }
-        Log.d("TokenTracker", "⚡ TOKEN RESET: '\(currentToken)' (by \(reason))")
-        currentToken = ""
+    private func clearToken(_ reason: String, isCompletion: Bool = false) {
+        if !currentToken.isEmpty {
+            Log.d("TokenTracker", "\(isCompletion ? "🔤 COMPLETED" : "⚡ RESET"): '\(currentToken)' (\(reason))")
+            currentToken = ""
+        }
+        if isPostReplacement {
+            isPostReplacement = false
+            Log.d("TokenTracker", "✅ ANALYSIS RE-ENABLED")
+        }
     }
     
-    private func isValidContext() -> Bool {
-        return !ApplicationDetector.isBlocked() && !ApplicationDetector.isCanvas()
+    /// Определение secure/password полей через Accessibility API
+    private func isSecureField() -> Bool {
+        let systemElement = AXUIElementCreateSystemWide()
+        var focusedElement: CFTypeRef?
+        
+        guard AXUIElementCopyAttributeValue(systemElement, kAXFocusedUIElementAttribute as CFString, &focusedElement) == .success,
+              let focused = focusedElement else {
+            return false // Fallback: allow operation if AX fails
+        }
+        
+        let focusedAXElement = focused as! AXUIElement
+        var role: CFTypeRef?
+        
+        guard AXUIElementCopyAttributeValue(focusedAXElement, kAXRoleAttribute as CFString, &role) == .success,
+              let roleString = role as? String else {
+            return false // Fallback: allow operation if role unavailable
+        }
+        
+        let isSecure = roleString == "AXSecureTextField"
+        if isSecure {
+            Log.d("TokenTracker", "🔒 SECURE FIELD: Blocking in \(ApplicationDetector.currentBundleID())")
+        }
+        return isSecure
     }
     
-    public func forceReset() {
-        guard !currentToken.isEmpty else { return }
-        Log.d("TokenTracker", "🔄 TOKEN DISCARDED: '\(currentToken)' (force reset)")
-        currentToken = ""
-    }
-    
-    private func checkContextChange() -> Bool {
+    private func handleFocusChangeIfNeeded() {
         let bundleID = ApplicationDetector.currentBundleID()
-        defer { lastBundleID = bundleID }
-        return !lastBundleID.isEmpty && bundleID != lastBundleID
+        guard !lastBundleID.isEmpty && bundleID != lastBundleID else {
+            lastBundleID = bundleID
+            return
+        }
+        
+        lastFocusChangeTime = CACurrentMediaTime()
+        Log.d("TokenTracker", "🔄 '\(lastBundleID)' → '\(bundleID)' (grace period)")
+        
+        if !currentToken.isEmpty {
+            Log.d("TokenTracker", "⚡ RESET: '\(currentToken)' (focus change)")
+            currentToken = ""
+        }
+        if isPostReplacement {
+            isPostReplacement = false
+            Log.d("TokenTracker", "✅ ANALYSIS RE-ENABLED")
+        }
+        lastBundleID = bundleID
+    }
+    
+    // MARK: - Public API
+    
+    /// Получение текущего токена для автозамены
+    public func getCurrentToken() -> String { currentToken }
+    
+    public func isValidContextPublic() -> Bool {
+        let isInGracePeriod = (CACurrentMediaTime() - lastFocusChangeTime) < Self.focusChangeGracePeriod
+        let isSecure = isSecureField()
+        if isInGracePeriod && !isSecure {
+            Log.d("TokenTracker", "⏰ GRACE PERIOD: keystroke allowed")
+        }
+        return !isSecure
+    }
+    
+    public func isPostReplacementMode() -> Bool { isPostReplacement }
+    public func forceReset() { clearToken("force") }
+    
+    public func updateTokenAfterReplacement(newText: String, originalToken: String) {
+        Log.d("TokenTracker", "🔄 '\(originalToken)' → '\(newText)' (analysis disabled)")
+        currentToken = newText
+        isPostReplacement = true
     }
 }

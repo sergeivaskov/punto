@@ -5,7 +5,8 @@ import Carbon
 final class InputSourceManager {
     
     enum InputSourceID: String {
-        case usEnglish = "com.apple.keylayout.US"
+        case usEnglish = "com.apple.keylayout.ABC"
+        case usEnglishAlternate = "com.apple.keylayout.US" 
         case russianPhonetic = "com.apple.keylayout.Russian-Phonetic"
         case russian = "com.apple.keylayout.Russian"
     }
@@ -57,7 +58,11 @@ final class InputSourceManager {
     
     /// Switch to English layout
     static func switchToEnglish() -> Bool {
-        return switchToInputSource(.usEnglish)
+        // Try ABC first (most common), fallback to US if not available
+        if switchToInputSource(.usEnglish) {
+            return true
+        }
+        return switchToInputSource(.usEnglishAlternate)
     }
     
     /// Switch to Russian layout (prefer standard Russian over Phonetic)
@@ -107,5 +112,23 @@ final class InputSourceManager {
         
         let success = switchToInputSource(targetLayout)
         Log.d("InputSourceManager", "Layout switch after conversion: \(success ? "success" : "failed") to \(targetLayout.rawValue)")
+    }
+    
+    /// Debug method to list all available input sources
+    static func listAllInputSources() {
+        guard let sources = TISCreateInputSourceList(nil, false)?.takeRetainedValue() as? [TISInputSource] else {
+            Log.d("InputSourceManager", "Failed to get input sources list")
+            return
+        }
+        
+        Log.d("InputSourceManager", "Available input sources:")
+        for source in sources {
+            guard let id = TISGetInputSourceProperty(source, kTISPropertyInputSourceID) else {
+                continue
+            }
+            
+            let currentID = Unmanaged<CFString>.fromOpaque(id).takeUnretainedValue() as String
+            Log.d("InputSourceManager", "- \(currentID)")
+        }
     }
 }

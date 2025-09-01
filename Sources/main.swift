@@ -40,13 +40,33 @@ class PuntoPuntoApp: NSObject, NSApplicationDelegate {
             return
         }
         
-        // Регистрация Option клавиши для переключения раскладки
-        hotkeyManager.registerLayoutSwitch()
+        // Асинхронная инициализация с правильной последовательностью
+        Task {
+            await initializeAsync()
+        }
+    }
+    
+    /// Асинхронная инициализация компонентов в правильном порядке
+    private func initializeAsync() async {
+        // 1. Загрузка словарей для автозамены (КРИТИЧНО: до регистрации hotkeys)
+        Log.d("PuntoPunto", "🔄 Loading dictionaries...")
+        await DictionaryManager.shared.loadDictionaries()
+        Log.d("PuntoPunto", "✅ Dictionaries ready")
         
-        // Создание иконки в системном трее
-        setupStatusItem()
-        
-        Log.d("PuntoPunto", "PuntoPunto successfully initialized and ready")
+        // 2. UI-related операции должны выполняться в main thread
+        await MainActor.run {
+            // Debug: список доступных input sources
+            InputSourceManager.listAllInputSources()
+            
+            // Регистрация Option клавиши ТОЛЬКО после готовности словарей
+            hotkeyManager.registerLayoutSwitch()
+            Log.d("PuntoPunto", "✅ Auto-replacement enabled")
+            
+            // Создание иконки в системном трее (требует main thread)
+            setupStatusItem()
+            
+            Log.d("PuntoPunto", "PuntoPunto successfully initialized and ready")
+        }
     }
     
     func applicationWillTerminate(_ aNotification: Notification) {
