@@ -154,14 +154,20 @@ public final class HotkeyManager {
     }
     
     private func handleKeyDown(_ event: CGEvent) -> Bool {
+        let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+        
         // Realtime tokenization
         tokenTracker.handleKeyDown(event, isProcessing: isProcessing)
         
-        // Auto-replacement analysis
+        // Short token space analysis
+        if keyCode == CGKeyCode(kVK_Space) && tokenTracker.isPendingSpaceAnalysisActive() {
+            handleSpaceKeyDownForShortTokens()
+        }
+        
+        // Auto-replacement analysis for regular tokens
         handleKeyDownForAutoReplacement(event)
         
         // Hotkey processing
-        let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
         let flags = event.flags
         
         for hotkey in hotkeys {
@@ -176,6 +182,14 @@ public final class HotkeyManager {
     }
     
     private func handleKeyUp(_ event: CGEvent) -> Bool {
+        let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+        
+        // Short token space completion
+        if keyCode == CGKeyCode(kVK_Space) && tokenTracker.isPendingSpaceAnalysisActive() {
+            handleSpaceKeyUpForShortTokens()
+        }
+        
+        // Regular auto-replacement
         handleKeyUpForAutoReplacement(event)
         return false // Never consume keyUp events
     }
@@ -265,6 +279,35 @@ public final class HotkeyManager {
         autoReplacer.executePlannedReplacement { [weak self] success, originalToken, replacementText in
             if success {
                 self?.tokenTracker.updateTokenAfterReplacement(newText: replacementText, originalToken: originalToken)
+            }
+        }
+    }
+    
+    // MARK: - Short Token Space Analysis
+    
+    private func handleSpaceKeyDownForShortTokens() {
+        let currentToken = tokenTracker.getCurrentToken()
+        guard currentToken.count < 3 && !currentToken.isEmpty else { return }
+        guard shouldProcessAutoReplacement() else {
+            tokenTracker.completeSpaceAnalysis(success: false)
+            return
+        }
+        
+        Log.d("HotkeyManager", "🔤 SPACE DOWN: analyzing short token '\(currentToken)'")
+        autoReplacer.analyzeShortTokenWithSpace(currentToken)
+    }
+    
+    private func handleSpaceKeyUpForShortTokens() {
+        guard shouldProcessAutoReplacement() else {
+            tokenTracker.completeSpaceAnalysis(success: false)
+            return
+        }
+        
+        Log.d("HotkeyManager", "🔤 SPACE UP: executing planned short token replacement")
+        autoReplacer.executePlannedReplacement { [weak self] success, originalToken, replacementText in
+            self?.tokenTracker.completeSpaceAnalysis(success: success)
+            if success {
+                Log.d("HotkeyManager", "🔤 SHORT TOKEN: '\(originalToken)' → '\(replacementText)'")
             }
         }
     }

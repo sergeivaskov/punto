@@ -9,6 +9,7 @@ public final class TokenTracker {
     private var lastBundleID: String = ""
     private var isPostReplacement: Bool = false
     private var lastFocusChangeTime: CFTimeInterval = 0
+    private var isPendingSpaceAnalysis: Bool = false
     private let layoutConverter = QwertyJcukenLayoutConverter()
     
     private static let maxTokenLength = 100
@@ -33,7 +34,17 @@ public final class TokenTracker {
         handleFocusChangeIfNeeded()
         
         if let reason = Self.interruptionMap[keyCode] { return clearToken(reason) }
-        if keyCode == CGKeyCode(kVK_Space) { return clearToken("space", isCompletion: true) }
+        
+        // Специальная обработка пробела для коротких токенов
+        if keyCode == CGKeyCode(kVK_Space) {
+            if currentToken.count < 3 && !currentToken.isEmpty {
+                Log.d("TokenTracker", "🔤 SHORT TOKEN '\(currentToken)': pending space analysis")
+                isPendingSpaceAnalysis = true
+                return // НЕ очищаем токен пока
+            } else {
+                return clearToken("space", isCompletion: true)
+            }
+        }
         
         let skipModifiers: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate]
         guard skipModifiers.intersection(event.flags).isEmpty,
@@ -61,6 +72,10 @@ public final class TokenTracker {
         if isPostReplacement {
             isPostReplacement = false
             Log.d("TokenTracker", "✅ ANALYSIS RE-ENABLED")
+        }
+        if isPendingSpaceAnalysis {
+            isPendingSpaceAnalysis = false
+            Log.d("TokenTracker", "🔤 SPACE ANALYSIS: cancelled (\(reason))")
         }
     }
     
@@ -131,5 +146,21 @@ public final class TokenTracker {
         Log.d("TokenTracker", "🔄 '\(originalToken)' → '\(newText)' (analysis disabled)")
         currentToken = newText
         isPostReplacement = true
+    }
+    
+    // MARK: - Short Token Space Analysis Support
+    
+    public func isPendingSpaceAnalysisActive() -> Bool { isPendingSpaceAnalysis }
+    
+    public func completeSpaceAnalysis(success: Bool) {
+        guard isPendingSpaceAnalysis else { return }
+        
+        if success {
+            Log.d("TokenTracker", "🔤 SPACE ANALYSIS: completed - clearing token")
+            clearToken("space-replacement", isCompletion: true)
+        } else {
+            Log.d("TokenTracker", "🔤 SPACE ANALYSIS: no replacement - clearing token")
+            clearToken("space-normal", isCompletion: true)
+        }
     }
 }

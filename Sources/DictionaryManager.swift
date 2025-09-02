@@ -24,6 +24,15 @@ private class TrieNode {
         }
         return true
     }
+    
+    func isCompleteWord(_ word: String) -> Bool {
+        var current = self
+        for char in word.lowercased() {
+            guard let next = current.children[char] else { return false }
+            current = next
+        }
+        return current.isWordEnd
+    }
 }
 
 /// Менеджер словарей с быстрым поиском префиксов
@@ -90,14 +99,15 @@ public final class DictionaryManager {
     private func createTrieFromContent(_ content: String, language: String) -> TrieNode {
         let words = content.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0.count >= 2 && $0.allSatisfy { $0.isLetter } }
+            .filter { !$0.isEmpty && $0.allSatisfy { $0.isLetter } }
         
         let root = TrieNode()
         for word in words {
             root.insert(word)
         }
         
-        Log.d("DictionaryManager", "Loaded \(language.uppercased()): \(words.count) words")
+        let singleCharWords = words.filter { $0.count == 1 }.count
+        Log.d("DictionaryManager", "Loaded \(language.uppercased()): \(words.count) words (including \(singleCharWords) single-char)")
         return root
     }
     
@@ -107,6 +117,14 @@ public final class DictionaryManager {
         
         let trie = (language == .enUS) ? enTrie : ruTrie
         return trie.hasPrefix(prefix)
+    }
+    
+    /// Проверка завершенного слова в конкретном языке
+    public func isCompleteWord(_ word: String, in language: KeyboardLayout) -> Bool {
+        guard isLoaded, !word.isEmpty else { return false }
+        
+        let trie = (language == .enUS) ? enTrie : ruTrie
+        return trie.isCompleteWord(word)
     }
     
     /// Анализ префикса в обоих языках
@@ -122,6 +140,30 @@ public final class DictionaryManager {
         
         let hasEN = hasPrefix(prefix, in: .enUS)
         let hasRU = hasPrefix(prefix, in: .ruRU)
+        
+        switch (hasEN, hasRU) {
+        case (true, false):
+            return .onlyEnglish
+        case (false, true):
+            return .onlyRussian
+        case (true, true):
+            return .ambiguous
+        case (false, false):
+            return .none
+        }
+    }
+    
+    /// Анализ завершенного слова в обеих раскладках для коротких токенов
+    public func analyzeCompleteWord(_ word: String) -> PrefixAnalysis {
+        guard isLoaded else {
+            Log.d("DictionaryManager", "⏳ DICTIONARIES NOT READY: word analysis skipped for '\(word)'")
+            return .tooShort
+        }
+        
+        guard !word.isEmpty else { return .tooShort }
+        
+        let hasEN = isCompleteWord(word, in: .enUS)
+        let hasRU = isCompleteWord(word, in: .ruRU)
         
         switch (hasEN, hasRU) {
         case (true, false):
