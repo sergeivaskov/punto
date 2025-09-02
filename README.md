@@ -69,13 +69,17 @@ cp .build/release/PuntoPunto /Applications/
 ```
 Sources/
 ├── HotkeyManager.swift          # Управление горячими клавишами и CGEventTap
+├── TokenTracker.swift           # Real-time анализ клавиатурного ввода
+├── AutoReplacer.swift           # Логика принятия решений о замене
+├── ReplacementExecutor.swift    # Исполнение автоматических замен
+├── DictionaryManager.swift      # Управление словарями и анализ префиксов
 ├── LayoutConverter.swift        # Конверсия текста между раскладками
 ├── ApplicationDetector.swift    # Определение типа активного приложения
 ├── ContextValidator.swift       # Валидация контекста для конверсии
 ├── ClipboardProcessor.swift     # Работа с буфером обмена
 ├── InputSourceManager.swift     # Управление системными раскладками
 ├── UniversalCanvaDetector.swift # Определение Canvas приложений
-└── PasteboardManager.swift      # Backup/restore буфера обмена
+└── SoundPlayer.swift            # Звуковые уведомления
 ```
 
 ### Принципы архитектуры
