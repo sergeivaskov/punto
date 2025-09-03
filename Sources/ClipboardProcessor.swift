@@ -13,6 +13,7 @@ final class ClipboardProcessor {
         let reason: String
         let originalText: String?
         let convertedText: String?
+        let clipboardWasChanged: Bool
     }
     
     /// Process clipboard content with validation and conversion
@@ -29,7 +30,8 @@ final class ClipboardProcessor {
                 success: false,
                 reason: "No text in clipboard",
                 originalText: nil,
-                convertedText: nil
+                convertedText: nil,
+                clipboardWasChanged: false
             ))
             return
         }
@@ -41,7 +43,8 @@ final class ClipboardProcessor {
                 success: false,
                 reason: "No selection detected - clipboard unchanged, cancelling operation",
                 originalText: clipboardText,
-                convertedText: nil
+                convertedText: nil,
+                clipboardWasChanged: false
             ))
             return
         }
@@ -54,7 +57,8 @@ final class ClipboardProcessor {
                 success: false,
                 reason: basicValidation.reason,
                 originalText: clipboardText,
-                convertedText: nil
+                convertedText: nil,
+                clipboardWasChanged: true
             ))
             return
         }
@@ -67,7 +71,8 @@ final class ClipboardProcessor {
                 success: false,
                 reason: contentValidation.reason,
                 originalText: clipboardText,
-                convertedText: nil
+                convertedText: nil,
+                clipboardWasChanged: true
             ))
             return
         }
@@ -85,7 +90,8 @@ final class ClipboardProcessor {
             success: true,
             reason: "Text converted successfully",
             originalText: clipboardText,
-            convertedText: convertedText
+            convertedText: convertedText,
+            clipboardWasChanged: true
         ))
     }
     

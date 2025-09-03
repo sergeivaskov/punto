@@ -317,7 +317,9 @@ public final class HotkeyManager {
 
 final class LayoutSwitchAction {
     private let clipboardProcessor = ClipboardProcessor()
+    private let layoutConverter = QwertyJcukenLayoutConverter()
     private var lastActivationTime: Date = Date.distantPast
+    private var lastSelectionResult: TextSelectionResult?
     
     private func getFocusedElementRole() -> String? {
         let systemElement = AXUIElementCreateSystemWide()
@@ -348,14 +350,22 @@ final class LayoutSwitchAction {
         return false
     }
     
-    private func hasTextSelection(_ element: AXUIElement) -> Bool {
+    struct TextSelectionResult {
+        let hasSelection: Bool
+        let text: String
+        let element: AXUIElement?
+    }
+    
+    private func hasTextSelection(_ element: AXUIElement) -> TextSelectionResult {
         var selectedText: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &selectedText) == .success,
               let text = selectedText as? String,
-              !text.isEmpty else { return false }
+              !text.isEmpty else { 
+            return TextSelectionResult(hasSelection: false, text: "", element: nil)
+        }
         
-        Log.d("LayoutSwitchAction", "Text selection: '\(text.prefix(50))...'")
-        return true
+        Log.d("LayoutSwitchAction", "Text selection: '\(text)'")
+        return TextSelectionResult(hasSelection: true, text: text, element: element)
     }
     
     private func checkValidTextContext() -> Bool {
@@ -376,7 +386,9 @@ final class LayoutSwitchAction {
                let focused = focusedElement {
                 let focusedAXElement = focused as! AXUIElement
                 
-                if hasTextSelection(focusedAXElement) {
+                let selectionResult = hasTextSelection(focusedAXElement)
+                lastSelectionResult = selectionResult // Store for potential AX fallback
+                if selectionResult.hasSelection {
                     return true
                 } else {
                     // Check for Canva web app
@@ -395,6 +407,35 @@ final class LayoutSwitchAction {
             Log.d("LayoutSwitchAction", "Non-text element - likely Canvas")
             return false
         }
+    }
+    
+    /// Direct AX replacement fallback when clipboard method fails
+    private func tryDirectAXReplacement(_ selectionResult: TextSelectionResult) -> Bool {
+        guard selectionResult.hasSelection,
+              let element = selectionResult.element else {
+            Log.d("LayoutSwitchAction", "Direct AX: No valid selection or element")
+            return false
+        }
+        
+        let originalText = selectionResult.text
+        let convertedText = layoutConverter.convertToOppositeLayout(originalText)
+        
+        Log.d("LayoutSwitchAction", "Direct AX: Converting '\(originalText)' -> '\(convertedText)'")
+        
+        // Replace text through AX API
+        let textCFString = convertedText as CFString
+        let result = AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, textCFString)
+        
+        guard result == .success else {
+            Log.d("LayoutSwitchAction", "Direct AX: Failed to set selected text, error: \(result.rawValue)")
+            return false
+        }
+        
+        // Switch input source based on conversion
+        InputSourceManager.switchBasedOnConvertedText(originalText: originalText, convertedText: convertedText)
+        
+        Log.d("LayoutSwitchAction", "Direct AX: Replacement successful")
+        return true
     }
     
     func performHotkeyAsync(suspendCallback: @escaping () -> Void, resumeCallback: @escaping () -> Void) {
@@ -439,13 +480,53 @@ final class LayoutSwitchAction {
         }
     }
     
+    /// Determines if a processing failure is a validation/protection mechanism (no error sound needed)
+    /// vs a technical failure (error sound should be played)
+    private func isValidationFailure(_ reason: String) -> Bool {
+        let isValidation = reason.contains("No selection detected") ||
+                          reason.contains("Text too long") ||
+                          reason.contains("likely data object") ||
+                          reason.contains("Multiline content detected") ||
+                          reason.contains("No text in clipboard")
+        
+        Log.d("LayoutSwitchAction", "Sound decision: \(isValidation ? "validation failure (no sound)" : "technical error (error sound)")")
+        return isValidation
+    }
+    
     private func handleProcessingResult(_ result: ClipboardProcessor.ProcessingResult, pasteboardBackup: PasteboardManager.PasteboardBackup, resumeCallback: @escaping () -> Void) {
         guard result.success else {
             Log.d("LayoutSwitchAction", "Processing failed: \(result.reason)")
-            PasteboardManager.restorePasteboard(pasteboardBackup)
+            
+            // Try AX fallback if clipboard failed but we have selection
+            if result.reason.contains("No selection detected"), 
+               let selectionResult = lastSelectionResult,
+               selectionResult.hasSelection {
+                Log.d("LayoutSwitchAction", "Attempting AX fallback for clipboard failure")
+                
+                if tryDirectAXReplacement(selectionResult) {
+                    // AX fallback succeeded
+                    Log.d("LayoutSwitchAction", "Clipboard restore: performed (AX fallback success)")
+                    PasteboardManager.restorePasteboard(pasteboardBackup)
+                    resumeCallback()
+                    SoundPlayer.shared.playSuccess()
+                    Log.d("LayoutSwitchAction", "AX fallback successful")
+                    return
+                } else {
+                    Log.d("LayoutSwitchAction", "AX fallback also failed")
+                }
+            }
+            
+            // Fallback failed or not applicable
+            // Conditional restore: only if clipboard was actually changed
+            if result.clipboardWasChanged {
+                Log.d("LayoutSwitchAction", "Clipboard restore: performed (clipboard was changed)")
+                PasteboardManager.restorePasteboard(pasteboardBackup)
+            } else {
+                Log.d("LayoutSwitchAction", "Clipboard restore: skipped (clipboard unchanged - optimization)")
+            }
             resumeCallback()
             
-            if !result.reason.contains("No selection detected") {
+            if !isValidationFailure(result.reason) {
                 SoundPlayer.shared.playError()
             }
             return
@@ -454,6 +535,7 @@ final class LayoutSwitchAction {
         // Paste converted text
         guard clipboardProcessor.pasteContent() else {
             Log.d("LayoutSwitchAction", "Paste failed")
+            Log.d("LayoutSwitchAction", "Clipboard restore: performed (paste failure)")
             PasteboardManager.restorePasteboard(pasteboardBackup)
             resumeCallback()
             SoundPlayer.shared.playError()
@@ -466,6 +548,7 @@ final class LayoutSwitchAction {
                 InputSourceManager.switchBasedOnConvertedText(originalText: originalText, convertedText: convertedText)
             }
             
+            Log.d("LayoutSwitchAction", "Clipboard restore: performed (success)")
             PasteboardManager.restorePasteboard(pasteboardBackup)
             resumeCallback()
             SoundPlayer.shared.playSuccess()
