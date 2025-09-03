@@ -63,7 +63,7 @@ public final class AutoReplacer {
             state = .ambiguous(waitingFor: token)
             return .waitForMore
         case .none:
-            return analyzeConverted(token)
+            return analyzeConvertedToken(token)
         }
     }
     
